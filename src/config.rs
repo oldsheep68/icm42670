@@ -12,7 +12,7 @@ pub(crate) trait Bitfield {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Address {
     /// `AP_AD0` pin == 0
-    Primary   = 0x68,
+    Primary = 0x68,
     /// `AP_AD0` pin == 1
     Secondary = 0x69,
 }
@@ -21,11 +21,11 @@ pub enum Address {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AccelRange {
     /// ±2G
-    G2  = 3,
+    G2 = 3,
     /// ±4G
-    G4  = 2,
+    G4 = 2,
     /// ±8G
-    G8  = 1,
+    G8 = 1,
     /// ±16G
     G16 = 0,
 }
@@ -80,9 +80,9 @@ impl TryFrom<u8> for AccelRange {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GyroRange {
     /// ±250 deg/sec
-    Deg250  = 3,
+    Deg250 = 3,
     /// ±500 deg/sec
-    Deg500  = 2,
+    Deg500 = 2,
     /// ±1000 deg/sec
     Deg1000 = 1,
     /// ±2000 deg/sec
@@ -139,21 +139,23 @@ impl TryFrom<u8> for GyroRange {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PowerMode {
     /// Gyroscope: OFF, Accelerometer: OFF
-    Sleep           = 0b0000,
+    Sleep = 0b00000,
     /// Gyroscope: DRIVE ON, Accelerometer: OFF
-    Standby         = 0b0100,
+    Standby = 0b00100,
     /// Gyroscope: OFF, Accelerometer: DUTY-CYCLED
-    AccelLowPower   = 0b0010,
+    AccelLowPower = 0b00010,
     /// Gyroscope: OFF, Accelerometer: ON
-    AccelLowNoise   = 0b0011,
+    AccelLowNoise = 0b00011,
     /// Gyroscope: ON, Accelerometer: OFF
-    GyroLowNoise    = 0b1100,
+    GyroLowNoise = 0b01100,
     /// Gyroscope: ON, Accelerometer: ON
-    SixAxisLowNoise = 0b1111,
+    SixAxisLowNoise = 0b01111,
+    /// Idle mode RC oscilator is powered on Accel and Gyro OFF
+    Idle = 0b10000,
 }
 
 impl Bitfield for PowerMode {
-    const BITMASK: u8 = 0b0000_1111;
+    const BITMASK: u8 = 0b0001_1111;
 
     fn bits(self) -> u8 {
         // `GYRO_MODE` occupies bits 3:2 in the register
@@ -190,25 +192,25 @@ impl TryFrom<u8> for PowerMode {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AccelOdr {
     /// 1.6 kHz (LN mode)
-    Hz1600   = 0b0101,
+    Hz1600 = 0b0101,
     /// 800 Hz (LN mode
-    Hz800    = 0b0110,
+    Hz800 = 0b0110,
     /// 400 Hz (LP or LN mode)
-    Hz400    = 0b0111,
+    Hz400 = 0b0111,
     /// 200 Hz (LP or LN mode)
-    Hz200    = 0b1000,
+    Hz200 = 0b1000,
     /// 100 Hz (LP or LN mode)
-    Hz100    = 0b1001,
+    Hz100 = 0b1001,
     /// 50 Hz (LP or LN mode)
-    Hz50     = 0b1010,
+    Hz50 = 0b1010,
     /// 25 Hz (LP or LN mode)
-    Hz25     = 0b1011,
+    Hz25 = 0b1011,
     /// 12.5 Hz (LP or LN mode)
-    Hz12_5   = 0b1100,
+    Hz12_5 = 0b1100,
     /// 6.25 Hz (LP mode)
-    Hz6_25   = 0b1101,
+    Hz6_25 = 0b1101,
     /// 3.125 Hz (LP mode)
-    Hz3_125  = 0b1110,
+    Hz3_125 = 0b1110,
     /// 1.5625 Hz (LP mode
     Hz1_5625 = 0b1111,
 }
@@ -277,17 +279,17 @@ pub enum GyroOdr {
     /// 1.6k Hz
     Hz1600 = 0b0101,
     /// 800 Hz
-    Hz800  = 0b0110,
+    Hz800 = 0b0110,
     /// 400 Hz
-    Hz400  = 0b0111,
+    Hz400 = 0b0111,
     /// 200 Hz
-    Hz200  = 0b1000,
+    Hz200 = 0b1000,
     /// 100 Hz
-    Hz100  = 0b1001,
+    Hz100 = 0b1001,
     /// 50 Hz
-    Hz50   = 0b1010,
+    Hz50 = 0b1010,
     /// 25 Hz
-    Hz25   = 0b1011,
+    Hz25 = 0b1011,
     /// 12.5 Hz
     Hz12_5 = 0b1100,
 }
@@ -339,6 +341,152 @@ impl TryFrom<u8> for GyroOdr {
             0b1010 => Ok(Hz50),
             0b1011 => Ok(Hz25),
             0b1100 => Ok(Hz12_5),
+            _ => Err(SensorError::InvalidDiscriminant),
+        }
+    }
+}
+
+/// Gyroscope Filter Bandwith selection values
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GyroBw {
+    /// BW filter bypassed
+    Hz10000 = 0b000,
+    /// 180 Hz
+    Hz180 = 0b001,
+    /// 121 Hz
+    Hz121 = 0b010,
+    /// 73 Hz
+    Hz73 = 0b011,
+    /// 53 Hz
+    Hz53 = 0b100,
+    /// 34 Hz
+    Hz34 = 0b101,
+    /// 25 Hz
+    Hz25 = 0b110,
+    /// 16 Hz
+    Hz16 = 0b111,
+}
+
+impl GyroBw {
+    pub fn as_f32(self) -> f32 {
+        use GyroBw::*;
+
+        match self {
+            Hz10000 => 10000.0, // filter is bypassed
+            Hz180 => 180.0,
+            Hz121 => 121.0,
+            Hz73 => 73.0,
+            Hz53 => 53.0,
+            Hz34 => 34.0,
+            Hz25 => 25.0,
+            Hz16 => 16.0,
+        }
+    }
+}
+
+impl Default for GyroBw {
+    fn default() -> Self {
+        Self::Hz180
+    }
+}
+
+impl Bitfield for GyroBw {
+    const BITMASK: u8 = 0b0000_0111;
+
+    fn bits(self) -> u8 {
+        // `GYRO_UI_FILT_BW` occupies bits 2:0 in the register
+        self as u8
+    }
+}
+
+impl TryFrom<u8> for GyroBw {
+    type Error = SensorError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        use GyroBw::*;
+
+        match value {
+            0b000 => Ok(Hz10000), // filter is bypassed
+            0b001 => Ok(Hz180),
+            0b010 => Ok(Hz121),
+            0b011 => Ok(Hz73),
+            0b100 => Ok(Hz53),
+            0b101 => Ok(Hz34),
+            0b110 => Ok(Hz25),
+            0b111 => Ok(Hz16),
+            _ => Err(SensorError::InvalidDiscriminant),
+        }
+    }
+}
+
+/// Accelareration Filter Bandwith selection values
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AccelBw {
+    /// BW filter bypassed
+    Hz10000 = 0b000,
+    /// 180 Hz
+    Hz180 = 0b001,
+    /// 121 Hz
+    Hz121 = 0b010,
+    /// 73 Hz
+    Hz73 = 0b011,
+    /// 53 Hz
+    Hz53 = 0b100,
+    /// 34 Hz
+    Hz34 = 0b101,
+    /// 25 Hz
+    Hz25 = 0b110,
+    /// 16 Hz
+    Hz16 = 0b111,
+}
+
+impl AccelBw {
+    pub fn as_f32(self) -> f32 {
+        use AccelBw::*;
+
+        match self {
+            Hz10000 => 10000.0, // filter is bypassed
+            Hz180 => 180.0,
+            Hz121 => 121.0,
+            Hz73 => 73.0,
+            Hz53 => 53.0,
+            Hz34 => 34.0,
+            Hz25 => 25.0,
+            Hz16 => 16.0,
+        }
+    }
+}
+
+impl Default for AccelBw {
+    fn default() -> Self {
+        Self::Hz180
+    }
+}
+
+impl Bitfield for AccelBw {
+    const BITMASK: u8 = 0b0000_0111;
+
+    fn bits(self) -> u8 {
+        // `ACCEL_UI_FILT_BW` occupies bits 2:0 in the register
+        self as u8
+    }
+}
+
+impl TryFrom<u8> for AccelBw {
+    type Error = SensorError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        use AccelBw::*;
+
+        match value {
+            0b000 => Ok(Hz10000), // filter is bypassed
+            0b001 => Ok(Hz180),
+            0b010 => Ok(Hz121),
+            0b011 => Ok(Hz73),
+            0b100 => Ok(Hz53),
+            0b101 => Ok(Hz34),
+            0b110 => Ok(Hz25),
+            0b111 => Ok(Hz16),
             _ => Err(SensorError::InvalidDiscriminant),
         }
     }

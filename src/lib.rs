@@ -13,14 +13,14 @@
 
 #![no_std]
 
+use core::f32::consts::PI;
 use core::fmt::Debug;
 
 pub use accelerometer;
 use accelerometer::{
     error::Error as AccelerometerError,
     vector::{F32x3, I16x3},
-    Accelerometer,
-    RawAccelerometer,
+    Accelerometer, RawAccelerometer,
 };
 use embedded_hal::blocking::{
     delay::DelayUs,
@@ -30,14 +30,14 @@ use embedded_hal::blocking::{
 use crate::{
     config::Bitfield,
     error::SensorError,
-    register::{Bank0, Register, RegisterBank},
+    register::{Bank0, Mreg1, Register, RegisterBank},
 };
 pub use crate::{
-    config::{AccelOdr, AccelRange, Address, GyroOdr, GyroRange, PowerMode},
+    config::{AccelBw, AccelOdr, AccelRange, Address, GyroBw, GyroOdr, GyroRange, PowerMode},
     error::Error,
 };
 
-mod config;
+pub mod config;
 mod error;
 mod register;
 
@@ -48,6 +48,8 @@ pub mod prelude {
         RawAccelerometer as _accelerometer_RawAccelerometer,
     };
 }
+
+const GRAVITY: f32 = 9.81;
 
 /// ICM-42670 driver
 #[derive(Debug, Clone, Copy)]
@@ -91,6 +93,72 @@ where
         // The IMU uses `PowerMode::Sleep` by default, which disables both the accel and
         // gyro, so we enable them both during driver initialization.
         me.set_power_mode(PowerMode::SixAxisLowNoise)?;
+
+        Ok(me)
+    }
+
+    /// Instantiate a new instance of the driver and initialize the device
+    pub fn new_fifo(
+        i2c: I2C,
+        address: Address,
+        packet_type: FifoPacketType,
+        delay: &mut dyn DelayUs<u8>,
+    ) -> Result<Self, Error<E>> {
+        let mut me = Self { i2c, address };
+
+        // Verify that the device has the correct ID before continuing. If the ID does
+        // not match either of the expected values then it is likely the wrong chip is
+        // connected.
+        if !Self::DEVICE_IDS.contains(&me.device_id()?) {
+            return Err(Error::SensorError(SensorError::BadChip));
+        }
+
+        // Make sure that any configuration has been restored to the default values when
+        // initializing the driver.
+        me.set_accel_range(AccelRange::default())?;
+        me.set_gyro_range(GyroRange::default())?;
+
+        // enable RC oszillator, so that configuration is possible
+        me.set_power_mode(PowerMode::Idle)?;
+
+        // setup FIFO configurations
+        me.write_reg(&Bank0::FIFO_CONFIG1, 0)?;
+
+        me.write_reg(&Bank0::INT_SOURCE3, 8)?;
+
+        match packet_type {
+            FifoPacketType::Packet1 => {
+                me.write_mreg(delay, RegisterBank::MReg1, &Mreg1::FIFO_CONFIG5, 0x01)?;
+                // no FSYNC
+            }
+            FifoPacketType::Packet2 => {
+                me.write_mreg(delay, RegisterBank::MReg1, &Mreg1::FIFO_CONFIG5, 0x02)?;
+                // no FSYNC
+            }
+            FifoPacketType::Packet3 => {
+                me.write_mreg(delay, RegisterBank::MReg1, &Mreg1::FIFO_CONFIG5, 0x03)?;
+                // no FSYNC
+            }
+            FifoPacketType::Packet4 => {
+                me.write_mreg(delay, RegisterBank::MReg1, &Mreg1::FIFO_CONFIG5, 0x0B)?;
+                //3+8=B
+                // no FSYNC
+            }
+        }
+        me.write_mreg(delay, RegisterBank::MReg1, &Mreg1::TMST_CONFIG1, 0x15)?; // delta T for ts
+
+        // reduce number of generated packtets to 50Hz
+        me.set_accel_odr(AccelOdr::Hz100)?;
+        me.set_gyro_odr(GyroOdr::Hz100)?;
+
+        // The IMU uses `PowerMode::Sleep` by default, which disables both the accel and
+        // gyro, so we enable them both during driver initialization.
+        me.set_power_mode(PowerMode::SixAxisLowNoise)?;
+        for _i in 0..200 {
+            delay.delay_us(250);
+        }
+
+        me.update_reg(&Bank0::SIGNAL_PATH_RESET, 0b0000_0100, 0b0000_0100)?;
 
         Ok(me)
     }
@@ -191,6 +259,33 @@ where
         self.update_reg(&Bank0::GYRO_CONFIG0, range.bits(), GyroRange::BITMASK)
     }
 
+    /// Return the currently configured output data rate for the gyroscope
+    pub fn gyro_odr(&mut self) -> Result<GyroOdr, Error<E>> {
+        // `GYRO_ODR` occupies bits 3:0 in the register
+        let odr = self.read_reg(&Bank0::GYRO_CONFIG0)? & 0xF;
+        let odr = GyroOdr::try_from(odr)?;
+
+        Ok(odr)
+    }
+
+    /// Set the output data rate of the gyroscope
+    pub fn set_gyro_odr(&mut self, odr: GyroOdr) -> Result<(), Error<E>> {
+        self.update_reg(&Bank0::GYRO_CONFIG0, odr.bits(), GyroOdr::BITMASK)
+    }
+
+    pub fn gyro_bandwith(&mut self) -> Result<GyroBw, Error<E>> {
+        // `GYRO_UI_FILT_BW` occupies bits 2:0 in the register
+        let bw_sel = self.read_reg(&Bank0::GYRO_CONFIG1)? & 0x07;
+        let bw = GyroBw::try_from(bw_sel)?;
+
+        Ok(bw)
+    }
+
+    /// Set the gyro_bandwith filter of the gyro
+    pub fn set_gyro_bw(&mut self, range: GyroBw) -> Result<(), Error<E>> {
+        self.update_reg(&Bank0::GYRO_CONFIG1, range.bits(), GyroBw::BITMASK)
+    }
+
     /// Return the currently configured output data rate for the accelerometer
     pub fn accel_odr(&mut self) -> Result<AccelOdr, Error<E>> {
         // `ACCEL_ODR` occupies bits 3:0 in the register
@@ -205,18 +300,84 @@ where
         self.update_reg(&Bank0::ACCEL_CONFIG0, odr.bits(), AccelOdr::BITMASK)
     }
 
-    /// Return the currently configured output data rate for the gyroscope
-    pub fn gyro_odr(&mut self) -> Result<GyroOdr, Error<E>> {
-        // `GYRO_ODR` occupies bits 3:0 in the register
-        let odr = self.read_reg(&Bank0::GYRO_CONFIG0)? & 0xF;
-        let odr = GyroOdr::try_from(odr)?;
+    pub fn accel_bandwith(&mut self) -> Result<AccelBw, Error<E>> {
+        // `ACCEL_UI_FILT_BW` occupies bits 2:0 in the register
+        let bw_sel = self.read_reg(&Bank0::ACCEL_CONFIG1)? & 0x07;
+        let bw = AccelBw::try_from(bw_sel)?;
 
-        Ok(odr)
+        Ok(bw)
     }
 
-    /// Set the output data rate of the gyroscope
-    pub fn set_gyro_odr(&mut self, odr: GyroOdr) -> Result<(), Error<E>> {
-        self.update_reg(&Bank0::GYRO_CONFIG0, odr.bits(), GyroOdr::BITMASK)
+    /// Set the accel_bandwith filter of the accel-meter
+    pub fn set_accel_bw(&mut self, range: AccelBw) -> Result<(), Error<E>> {
+        self.update_reg(&Bank0::ACCEL_CONFIG1, range.bits(), AccelBw::BITMASK)
+    }
+
+    /// Enable pedometer of APEX functions
+    pub fn ped_ena(&mut self, enable: bool) -> Result<(), Error<E>> {
+        let mut bits: u8 = 0;
+        if enable == true {
+            bits = 0b0000_1000
+        }
+
+        self.update_reg(&Bank0::APEX_CONFIG0, 0b0000_0100, 0b0000_0100)?;
+        self.update_reg(&Bank0::APEX_CONFIG1, bits, 0b0000_1000)
+    }
+
+    /// read the ped counter value of APEX function
+    pub fn read_ped_cnt(&mut self) -> Result<u16, Error<E>> {
+        let ped_cnt = self.read_reg_u16(&Bank0::APEX_DATA1, &Bank0::APEX_DATA0)?;
+        Ok(ped_cnt)
+    }
+
+    /// read time stampe from register
+    pub fn read_tmst(&mut self) -> Result<u16, Error<E>> {
+        let ped_cnt = self.read_reg_u16(&Bank0::TMST_FSYNCH, &Bank0::TMST_FSYNCL)?;
+        Ok(ped_cnt)
+    }
+
+    /// read current fifo buffer level, available to read
+    pub fn read_fifo_cnt(&mut self) -> Result<u16, Error<E>> {
+        let fifo_cnt = self.read_reg_u16(&Bank0::FIFO_COUNTH, &Bank0::FIFO_COUNTL)?;
+        Ok(fifo_cnt)
+    }
+
+    pub fn set_fifo_mode(&mut self, delay: &mut dyn DelayUs<u8>) -> Result<(), Error<E>> {
+        self.write_reg(&Bank0::FIFO_CONFIG1, 0)?;
+        let _res = self.write_mreg(delay, RegisterBank::MReg1, &Mreg1::FIFO_CONFIG5, 3)?;
+        Ok(())
+    }
+
+    pub fn read_mreg1(
+        &mut self,
+        delay: &mut dyn DelayUs<u8>,
+        //reg: &dyn Register,
+    ) -> Result<u8, Error<E>> {
+        let read_val = self.read_mreg(delay, RegisterBank::MReg1, &Mreg1::FIFO_CONFIG5)?;
+        Ok(read_val)
+    }
+
+    // -----------------------------------------------------------------------
+    // development use temporare functions
+
+    pub fn read_fifo(&mut self, addr: u8, buffer: &mut [u8]) -> Result<u8, Error<E>> {
+        //let mut buffer = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+        let adr: [u8; 1] = [addr];
+        self.i2c
+            .write_read(self.address as u8, &adr, buffer)
+            .map_err(|e| Error::BusError(e))?;
+
+        Ok(buffer[0])
+    }
+
+    pub fn readreg(&mut self, addr: u8) -> Result<u8, Error<E>> {
+        let mut buffer = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+        let adr: [u8; 1] = [addr];
+        self.i2c
+            .write_read(self.address as u8, &adr, &mut buffer)
+            .map_err(|e| Error::BusError(e))?;
+
+        Ok(buffer[2])
     }
 
     // -----------------------------------------------------------------------
@@ -234,7 +395,7 @@ where
         // See "ACCESSING MREG1, MREG2 AND MREG3 REGISTERS" (page 40)
 
         // Wait until the internal clock is running prior to writing.
-        while self.read_reg(&Bank0::MCLK_RDY)? != 0x1 {}
+        while self.read_reg(&Bank0::MCLK_RDY)? != 0x9 {}
 
         // Select the appropriate block and set the register address to read from.
         self.write_reg(&Bank0::BLK_SEL_R, bank.blk_sel())?;
@@ -265,7 +426,7 @@ where
         // See "ACCESSING MREG1, MREG2 AND MREG3 REGISTERS" (page 40)
 
         // Wait until the internal clock is running prior to writing.
-        while self.read_reg(&Bank0::MCLK_RDY)? != 0x1 {}
+        while self.read_reg(&Bank0::MCLK_RDY)? != 0x9 {}
 
         // Select the appropriate block and set the register address to write to.
         self.write_reg(&Bank0::BLK_SEL_W, bank.blk_sel())?;
@@ -298,10 +459,24 @@ where
         reg_hi: &dyn Register,
         reg_lo: &dyn Register,
     ) -> Result<i16, Error<E>> {
-        let data_hi = self.read_reg(reg_hi)?;
         let data_lo = self.read_reg(reg_lo)?;
+        let data_hi = self.read_reg(reg_hi)?;
 
         let data = i16::from_be_bytes([data_hi, data_lo]);
+
+        Ok(data)
+    }
+
+    /// Read two registers and combine them into a single value.
+    fn read_reg_u16(
+        &mut self,
+        reg_hi: &dyn Register,
+        reg_lo: &dyn Register,
+    ) -> Result<u16, Error<E>> {
+        let data_lo = self.read_reg(reg_lo)?;
+        let data_hi = self.read_reg(reg_hi)?;
+
+        let data = u16::from_be_bytes([data_hi, data_lo]);
 
         Ok(data)
     }
@@ -330,6 +505,312 @@ where
             let value = (current & !mask) | (value & mask);
 
             self.write_reg(reg, value)
+        }
+    }
+}
+
+/// Fifo packe type to use in fifo mode
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FifoPacketType {
+    Packet1,
+    Packet2,
+    Packet3,
+    Packet4,
+}
+
+#[derive(Debug, Clone)]
+pub struct FifoDataP1 {
+    pub ax: i16,
+    pub ay: i16,
+    pub az: i16,
+    pub t: i8,
+}
+
+impl FifoDataP1 {
+    pub fn to_fifodata_raw(buffer: &mut [u8]) -> Self {
+        let ax = i16::from_be_bytes([buffer[1], buffer[2]]);
+        let ay = i16::from_be_bytes([buffer[3], buffer[4]]);
+        let az = i16::from_be_bytes([buffer[5], buffer[6]]);
+        let t = i8::from_be_bytes([buffer[7]]);
+
+        Self { ax, ay, az, t }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FifoDataP2 {
+    pub gx: i16,
+    pub gy: i16,
+    pub gz: i16,
+    pub t: i8,
+}
+
+impl FifoDataP2 {
+    pub fn to_fifodata_raw(buffer: &mut [u8]) -> Self {
+        let gx = i16::from_be_bytes([buffer[1], buffer[2]]);
+        let gy = i16::from_be_bytes([buffer[3], buffer[4]]);
+        let gz = i16::from_be_bytes([buffer[5], buffer[6]]);
+        let t = i8::from_be_bytes([buffer[7]]);
+
+        Self { gx, gy, gz, t }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FifoDataP3 {
+    pub ax: i16,
+    pub ay: i16,
+    pub az: i16,
+    pub gx: i16,
+    pub gy: i16,
+    pub gz: i16,
+    pub t: i8,
+    pub ts: u16,
+}
+
+impl FifoDataP3 {
+    pub fn to_fifodata_raw(buffer: &mut [u8]) -> Self {
+        let ax = i16::from_be_bytes([buffer[1], buffer[2]]);
+        let ay = i16::from_be_bytes([buffer[3], buffer[4]]);
+        let az = i16::from_be_bytes([buffer[5], buffer[6]]);
+        let gx = i16::from_be_bytes([buffer[7], buffer[8]]);
+        let gy = i16::from_be_bytes([buffer[9], buffer[10]]);
+        let gz = i16::from_be_bytes([buffer[11], buffer[12]]);
+        let t = i8::from_be_bytes([buffer[13]]);
+        let ts = u16::from_be_bytes([buffer[14], buffer[15]]);
+
+        Self {
+            ax,
+            ay,
+            az,
+            gx,
+            gy,
+            gz,
+            t,
+            ts,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FifoDataP4 {
+    pub ax: i32,
+    pub ay: i32,
+    pub az: i32,
+    pub gx: i32,
+    pub gy: i32,
+    pub gz: i32,
+    pub t: i16,
+    pub ts: u16,
+}
+
+impl FifoDataP4 {
+    pub fn to_fifodata_raw(buffer: &mut [u8]) -> Self {
+        let ax0: u8 = ((buffer[17] & 0xf0) >> 4) | (buffer[2] & 0x0f) << 4;
+        let ax1: u8 = ((buffer[2] & 0xf0) >> 4) | (buffer[1] & 0x0f) << 4;
+        let mut ax2: u8 = 0;
+        let mut ax3: u8 = 0;
+        if (buffer[1] & 0x80) > 0 {
+            ax2 = ((buffer[1] & 0xf0) >> 4) | 0xf0;
+            ax3 = 0xff;
+        } else {
+            ax2 = (buffer[1] & 0xf0) >> 4;
+        }
+        let ax = i32::from_be_bytes([ax3, ax2, ax1, ax0]);
+        let ay0: u8 = ((buffer[18] & 0xf0) >> 4) | (buffer[4] & 0x0f) << 4;
+        let ay1: u8 = ((buffer[4] & 0xf0) >> 4) | (buffer[3] & 0x0f) << 4;
+        let mut ay2: u8 = 0;
+        let mut ay3: u8 = 0;
+        if (buffer[3] & 0x80) > 0 {
+            ay2 = ((buffer[3] & 0xf0) >> 4) | 0xf0;
+            ay3 = 0xff;
+        } else {
+            ay2 = (buffer[3] & 0xf0) >> 4;
+        }
+        let ay = i32::from_be_bytes([ay3, ay2, ay1, ay0]);
+        let az0: u8 = ((buffer[19] & 0xf0) >> 4) | (buffer[6] & 0x0f) << 4;
+        let az1: u8 = ((buffer[6] & 0xf0) >> 4) | (buffer[5] & 0x0f) << 4;
+        let mut az2: u8 = 0;
+        let mut az3: u8 = 0;
+        if (buffer[5] & 0x80) > 0 {
+            az2 = ((buffer[5] & 0xf0) >> 4) | 0xf0;
+            az3 = 0xff;
+        } else {
+            az2 = (buffer[5] & 0xf0) >> 4;
+        }
+        let az = i32::from_be_bytes([az3, az2, az1, az0]);
+
+        let gx0: u8 = (buffer[17] & 0x0f) | (buffer[8] & 0x0f) << 4;
+        let gx1: u8 = ((buffer[8] & 0xf0) >> 4) | (buffer[7] & 0x0f) << 4;
+        let mut gx2: u8 = 0;
+        let mut gx3: u8 = 0;
+        if (buffer[7] & 0x80) > 0 {
+            gx2 = ((buffer[7] & 0xf0) >> 4) | 0xf0;
+            gx3 = 0xff;
+        } else {
+            gx2 = (buffer[7] & 0xf0) >> 4;
+        }
+        let gx = i32::from_be_bytes([gx3, gx2, gx1, gx0]);
+
+        let gy0: u8 = (buffer[18] & 0x0f) | (buffer[10] & 0x0f) << 4;
+        let gy1: u8 = ((buffer[10] & 0xf0) >> 4) | (buffer[9] & 0x0f) << 4;
+        let mut gy2: u8 = 0;
+        let mut gy3: u8 = 0;
+        if (buffer[9] & 0x80) > 0 {
+            gy2 = ((buffer[9] & 0xf0) >> 4) | 0xf0;
+            gy3 = 0xff;
+        } else {
+            gy2 = (buffer[9] & 0xf0) >> 4;
+        }
+        let gy = i32::from_be_bytes([gy3, gy2, gy1, gy0]);
+
+        let gz0: u8 = (buffer[19] & 0x0f) | (buffer[12] & 0x0f) << 4;
+        let gz1: u8 = ((buffer[12] & 0xf0) >> 4) | (buffer[11] & 0x0f) << 4;
+        let mut gz2: u8 = 0;
+        let mut gz3: u8 = 0;
+        if (buffer[11] & 0x80) > 0 {
+            gz2 = ((buffer[11] & 0xf0) >> 4) | 0xf0;
+            gz3 = 0xff;
+        } else {
+            gz2 = (buffer[11] & 0xf0) >> 4;
+        }
+        let gz = i32::from_be_bytes([gz3, gz2, gz1, gz0]);
+
+        let t = i16::from_be_bytes([buffer[13], buffer[14]]);
+        let ts = u16::from_be_bytes([buffer[15], buffer[16]]);
+
+        Self {
+            ax,
+            ay,
+            az,
+            gx,
+            gy,
+            gz,
+            t,
+            ts,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FifoDataSiP1 {
+    pub ax: f32,
+    pub ay: f32,
+    pub az: f32,
+    pub t: f32,
+}
+
+impl FifoDataSiP1 {
+    pub fn to_fifodata_si(buffer: &mut [u8], ascal: f32) -> Self {
+        let ax = i16::from_be_bytes([buffer[1], buffer[2]]);
+        let ay = i16::from_be_bytes([buffer[3], buffer[4]]);
+        let az = i16::from_be_bytes([buffer[5], buffer[6]]);
+        let t = i8::from_be_bytes([buffer[13]]);
+
+        Self {
+            ax: (ax as f32) / ascal * GRAVITY,
+            ay: (ay as f32) / ascal * GRAVITY,
+            az: (az as f32) / ascal * GRAVITY,
+            t: (((t as f32) / 128.0) + 25.0),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FifoDataSiP2 {
+    pub gx: f32,
+    pub gy: f32,
+    pub gz: f32,
+    pub t: f32,
+}
+
+impl FifoDataSiP2 {
+    pub fn to_fifodata_si(buffer: &mut [u8], gscal: f32) -> Self {
+        let gx = i16::from_be_bytes([buffer[7], buffer[8]]);
+        let gy = i16::from_be_bytes([buffer[9], buffer[10]]);
+        let gz = i16::from_be_bytes([buffer[11], buffer[12]]);
+        let t = i8::from_be_bytes([buffer[13]]);
+
+        Self {
+            gx: ((gx as f32) / gscal) * PI / 180.0,
+            gy: ((gy as f32) / gscal) * PI / 180.0,
+            gz: ((gz as f32) / gscal) * PI / 180.0,
+            t: (((t as f32) / 128.0) + 25.0),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FifoDataSiP3 {
+    pub ax: f32,
+    pub ay: f32,
+    pub az: f32,
+    pub gx: f32,
+    pub gy: f32,
+    pub gz: f32,
+    pub t: f32,
+    pub ts: f32,
+}
+
+impl FifoDataSiP3 {
+    pub fn to_fifodata_si(buffer: &mut [u8], ascal: f32, gscal: f32) -> Self {
+        let ax = i16::from_be_bytes([buffer[1], buffer[2]]);
+        let ay = i16::from_be_bytes([buffer[3], buffer[4]]);
+        let az = i16::from_be_bytes([buffer[5], buffer[6]]);
+        let gx = i16::from_be_bytes([buffer[7], buffer[8]]);
+        let gy = i16::from_be_bytes([buffer[9], buffer[10]]);
+        let gz = i16::from_be_bytes([buffer[11], buffer[12]]);
+        let t = i8::from_be_bytes([buffer[13]]);
+        let ts = u16::from_be_bytes([buffer[14], buffer[15]]);
+
+        Self {
+            ax: (ax as f32) / ascal * GRAVITY,
+            ay: (ay as f32) / ascal * GRAVITY,
+            az: (az as f32) / ascal * GRAVITY,
+            gx: ((gx as f32) / gscal) * PI / 180.0,
+            gy: ((gy as f32) / gscal) * PI / 180.0,
+            gz: ((gz as f32) / gscal) * PI / 180.0,
+            t: (((t as f32) / 128.0) + 25.0),
+            ts: (ts as f32) / 1_000_000.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FifoDataSiP4 {
+    pub ax: f32,
+    pub ay: f32,
+    pub az: f32,
+    pub gx: f32,
+    pub gy: f32,
+    pub gz: f32,
+    pub t: f32,
+    pub ts: f32,
+}
+
+impl FifoDataSiP4 {
+    pub fn to_fifodata_si(raw_data: &FifoDataP4) -> Self {
+        const ascal: f32 = 8192.0 * 4.0;
+        const gscal: f32 = 131.0 * 2.0;
+
+        let ax = raw_data.ax as f32;
+        let ay = raw_data.ay as f32;
+        let az = raw_data.az as f32;
+        let gx = raw_data.gx as f32;
+        let gy = raw_data.gy as f32;
+        let gz = raw_data.gz as f32;
+        let t = raw_data.t as f32;
+        let ts = raw_data.ts as f32;
+
+        Self {
+            ax: (ax as f32) / ascal * GRAVITY,
+            ay: (ay as f32) / ascal * GRAVITY,
+            az: (az as f32) / ascal * GRAVITY,
+            gx: ((gx as f32) / gscal) * PI / 180.0,
+            gy: ((gy as f32) / gscal) * PI / 180.0,
+            gz: ((gz as f32) / gscal) * PI / 180.0,
+            t: (((t as f32) / 128.0) + 25.0),
+            ts: (ts as f32) / 1_000_000.0,
         }
     }
 }
