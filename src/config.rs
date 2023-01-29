@@ -143,7 +143,7 @@ pub enum PowerMode {
     /// Gyroscope: DRIVE ON, Accelerometer: OFF
     Standby = 0b00100,
     /// Gyroscope: OFF, Accelerometer: DUTY-CYCLED
-    AccelLowPower = 0b00010,
+    AccelLowPower = 0b10010,
     /// Gyroscope: OFF, Accelerometer: ON
     AccelLowNoise = 0b00011,
     /// Gyroscope: ON, Accelerometer: OFF
