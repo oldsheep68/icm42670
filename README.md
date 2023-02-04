@@ -18,7 +18,7 @@ Examples demonstrating how to use this driver can be found in the [icm42670-exam
 
 [icm42670-examples]: https://github.com/jessebraham/icm42670-examples
 
-Furthere examples with various fifo-acces over I2C can be found in the repository:
+Furthere examples with various fifo-acces over I2C can be found in the repository: [esp-rv-baremetal-gyro-shtc3]
 
 [esp-rv-baremetal-gyro-shtc3]: https://github.com/oldsheep68/esp-rv-baremetal-gyro-shtc3/
 
