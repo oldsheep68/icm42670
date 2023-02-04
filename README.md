@@ -20,7 +20,7 @@ Examples demonstrating how to use this driver can be found in the [icm42670-exam
 
 Furthere examples with various fifo-acces over I2C can be found in the repository:
 
-[esp-rv-baremetal-gyro-shtc3] https://github.com/oldsheep68/esp-rv-baremetal-gyro-shtc3/
+[esp-rv-baremetal-gyro-shtc3]: https://github.com/oldsheep68/esp-rv-baremetal-gyro-shtc3/
 
 access over fifo has the advantage, that all values can be fetched with one much faster I2C access cycle. Furtheremore, all data are from the same smplingtime-interval.
 
