@@ -360,15 +360,25 @@ where
     // -----------------------------------------------------------------------
     // development use temporare functions
 
-    pub fn read_fifo(&mut self, addr: u8, buffer: &mut [u8]) -> Result<u8, Error<E>> {
+    pub fn read_fifo(&mut self, buffer: &mut [u8]) -> Result<u8, Error<E>> {
         //let mut buffer = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
-        let adr: [u8; 1] = [addr];
+        let adr: [u8; 1] = [0x3F];
         self.i2c
             .write_read(self.address as u8, &adr, buffer)
             .map_err(|e| Error::BusError(e))?;
 
         Ok(buffer[0])
     }
+
+    // pub fn read_fifo(&mut self, addr: u8, buffer: &mut [u8]) -> Result<u8, Error<E>> {
+    //     //let mut buffer = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+    //     let adr: [u8; 1] = [addr];
+    //     self.i2c
+    //         .write_read(self.address as u8, &adr, buffer)
+    //         .map_err(|e| Error::BusError(e))?;
+
+    //     Ok(buffer[0])
+    // }
 
     pub fn readreg(&mut self, addr: u8) -> Result<u8, Error<E>> {
         let mut buffer = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
@@ -518,7 +528,7 @@ pub enum FifoPacketType {
     Packet4,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct FifoDataP1 {
     pub ax: i16,
     pub ay: i16,
@@ -537,7 +547,7 @@ impl FifoDataP1 {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct FifoDataP2 {
     pub gx: i16,
     pub gy: i16,
@@ -556,7 +566,7 @@ impl FifoDataP2 {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct FifoDataP3 {
     pub ax: i16,
     pub ay: i16,
@@ -592,7 +602,7 @@ impl FifoDataP3 {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct FifoDataP4 {
     pub ax: i32,
     pub ay: i32,
